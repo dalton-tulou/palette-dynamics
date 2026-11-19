@@ -1,3 +1,4 @@
+import { RgbaImage } from '../quantize';
 import { IndexedImage, bitsFor, padPalette } from '../types';
 import { crc32, deflate, inflate } from './zlib';
 
@@ -29,9 +30,8 @@ function paeth(a: number, b: number, c: number): number {
 }
 
 /** Undo PNG scanline filters in place-ish; returns raw rows (without filter bytes). */
-function unfilter(data: Uint8Array, offset: number, rowBytes: number, rows: number): Uint8Array {
+function unfilter(data: Uint8Array, offset: number, rowBytes: number, rows: number, bpp: number): Uint8Array {
   const out = new Uint8Array(rowBytes * rows);
-  const bpp = 1; // all supported formats have <= 8 bits per pixel
   for (let y = 0; y < rows; y++) {
     const ft = data[offset++];
     const o = y * rowBytes;
@@ -64,7 +64,7 @@ function readSample(row: Uint8Array, rowStart: number, x: number, depth: number)
   return (byte >> shift) & ((1 << depth) - 1);
 }
 
-export async function decodePng(bytes: Uint8Array): Promise<IndexedImage> {
+export async function decodePng(bytes: Uint8Array): Promise<IndexedImage | RgbaImage> {
   if (!isPng(bytes)) throw new Error('Not a PNG file');
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let pos = 8;
@@ -89,9 +89,11 @@ export async function decodePng(bytes: Uint8Array): Promise<IndexedImage> {
     else if (type === 'IEND') break;
   }
   if (!width || !height) throw new Error('PNG: missing IHDR');
-  if (depth > 8) throw new Error(`PNG: ${depth}-bit samples are not indexed`);
+  const channels = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 }[colorType];
+  if (!channels) throw new Error(`PNG: unknown color type ${colorType}`);
+  const indexed = colorType === 3 || (colorType === 0 && depth <= 8);
 
-  if (colorType === 0) {
+  if (colorType === 0 && depth <= 8) {
     // Grayscale: treat as indexed with a gray ramp.
     const n = 1 << depth;
     palette = new Uint8Array(n * 3);
@@ -99,10 +101,8 @@ export async function decodePng(bytes: Uint8Array): Promise<IndexedImage> {
       const g = Math.round((i * 255) / (n - 1));
       palette[i * 3] = palette[i * 3 + 1] = palette[i * 3 + 2] = g;
     }
-  } else if (colorType !== 3) {
-    throw new Error('PNG is truecolor, not indexed. Save it as an 8-bit (palette) PNG first.');
   }
-  if (!palette) throw new Error('PNG: indexed image without PLTE');
+  if (colorType === 3 && !palette) throw new Error('PNG: indexed image without PLTE');
 
   const total = idat.reduce((s, c) => s + c.length, 0);
   const z = new Uint8Array(total);
@@ -110,22 +110,55 @@ export async function decodePng(bytes: Uint8Array): Promise<IndexedImage> {
   for (const c of idat) { z.set(c, off); off += c.length; }
   const data = await inflate(z);
 
-  const indices = new Uint8Array(width * height);
   const passes = interlace ? ADAM7 : [[0, 0, 1, 1]];
-  let dpos = 0;
-  for (const [x0, y0, dx, dy] of passes) {
-    const pw = Math.ceil((width - x0) / dx);
-    const ph = Math.ceil((height - y0) / dy);
-    if (pw <= 0 || ph <= 0) continue;
-    const rowBytes = Math.ceil((pw * depth) / 8);
-    const rows = unfilter(data, dpos, rowBytes, ph);
-    dpos += (rowBytes + 1) * ph;
+  const bpp = Math.max(1, (channels * depth) >> 3);
+  const forEachPass = (fn: (rows: Uint8Array, rowBytes: number, pw: number, ph: number, x0: number, y0: number, dx: number, dy: number) => void) => {
+    let dpos = 0;
+    for (const [x0, y0, dx, dy] of passes) {
+      const pw = Math.ceil((width - x0) / dx);
+      const ph = Math.ceil((height - y0) / dy);
+      if (pw <= 0 || ph <= 0) continue;
+      const rowBytes = Math.ceil((pw * channels * depth) / 8);
+      fn(unfilter(data, dpos, rowBytes, ph, bpp), rowBytes, pw, ph, x0, y0, dx, dy);
+      dpos += (rowBytes + 1) * ph;
+    }
+  };
+
+  if (!indexed) {
+    // Truecolor, gray+alpha, or 16-bit gray: decode to RGBA (16-bit samples keep the high byte).
+    const rgba = new Uint8Array(width * height * 4);
+    const step = depth >> 3; // bytes per sample: 1 or 2
+    const key = trns && trns.length >= 2 * (colorType === 2 ? 3 : 1)
+      ? Array.from({ length: colorType === 2 ? 3 : 1 }, (_, i) => (trns![i * 2] << 8) | trns![i * 2 + 1])
+      : null;
+    forEachPass((rows, rowBytes, pw, ph, x0, y0, dx, dy) => {
+      for (let y = 0; y < ph; y++) {
+        for (let x = 0; x < pw; x++) {
+          const so = y * rowBytes + x * channels * step;
+          const sample = (c: number) => (step === 2 ? (rows[so + c * 2] << 8) | rows[so + c * 2 + 1] : rows[so + c]);
+          const hi = (c: number) => rows[so + c * step];
+          const o = ((y0 + y * dy) * width + x0 + x * dx) * 4;
+          let r: number, g: number, b: number, a = 255;
+          if (colorType === 0 || colorType === 4) { r = g = b = hi(0); if (colorType === 4) a = hi(1); }
+          else { r = hi(0); g = hi(1); b = hi(2); if (colorType === 6) a = hi(3); }
+          if (key && (colorType === 0 ? sample(0) === key[0] : sample(0) === key[0] && sample(1) === key[1] && sample(2) === key[2])) a = 0;
+          rgba[o] = r; rgba[o + 1] = g; rgba[o + 2] = b; rgba[o + 3] = a;
+        }
+      }
+    });
+    const kind = { 0: 'grayscale', 2: 'RGB', 4: 'gray+alpha', 6: 'RGBA' }[colorType as 0 | 2 | 4 | 6];
+    return { width, height, data: rgba, source: `PNG, ${depth}-bit ${kind}${interlace ? ', interlaced' : ''}` };
+  }
+
+  const indices = new Uint8Array(width * height);
+  forEachPass((rows, rowBytes, pw, ph, x0, y0, dx, dy) => {
     for (let y = 0; y < ph; y++) {
       for (let x = 0; x < pw; x++) {
         indices[(y0 + y * dy) * width + x0 + x * dx] = readSample(rows, y * rowBytes, x, depth);
       }
     }
-  }
+  });
+  palette = palette!;
 
   let transparentIndex: number | undefined;
   if (trns && colorType === 3) {

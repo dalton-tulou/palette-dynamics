@@ -11,7 +11,11 @@ npm test
 ```
 
 Drop an indexed PNG (1/2/4/8-bit, Adam7 ok), a GIF (first frame) or an IFF
-ILBM/PBM (ByteRun1, EHB; not HAM) onto the page. **Rearrange colors** finds a
+ILBM/PBM (ByteRun1, EHB) onto the page. True-color images (RGB/RGBA/16-bit
+PNG, HAM6/HAM8 and 24/32-bit ILBM, or anything the browser can decode such as
+JPEG/WebP) are converted: with 256 colors or fewer they become the palette
+as-is, otherwise they are reduced to 256 colors (median cut + k-means in
+OKLab) with Floyd–Steinberg dithering. Transparent pixels get one palette entry. **Rearrange colors** finds a
 new order, the **bit depth** slider shows the image with only the lowest *n*
 bits kept, and you can export the result as PNG or ILBM.
 

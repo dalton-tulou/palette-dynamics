@@ -1,3 +1,4 @@
+import { RgbaImage } from '../quantize';
 import { IndexedImage, bitsFor, padPalette } from '../types';
 
 export function isIlbm(b: Uint8Array): boolean {
@@ -24,7 +25,7 @@ const CAMG_HAM = 0x800;
 const CAMG_EHB = 0x80;
 
 /** Decodes IFF ILBM (planar) and PBM (chunky) images. */
-export function decodeIlbm(b: Uint8Array): IndexedImage {
+export function decodeIlbm(b: Uint8Array): IndexedImage | RgbaImage {
   if (!isIlbm(b)) throw new Error('Not an IFF ILBM/PBM file');
   const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
   const chunky = String.fromCharCode(b[8], b[9], b[10], b[11]) === 'PBM ';
@@ -51,8 +52,9 @@ export function decodeIlbm(b: Uint8Array): IndexedImage {
     p = d + len + (len & 1);
   }
   if (!width || !height || !body) throw new Error('ILBM: missing BMHD or BODY');
-  if (camg & CAMG_HAM) throw new Error('ILBM: HAM images are not palette-indexed');
-  if (planes > 8) throw new Error(`ILBM: ${planes} bitplanes (true color) not supported`);
+  const ham = (camg & CAMG_HAM) !== 0 && (planes === 6 || planes === 8);
+  const deep = !chunky && (planes === 24 || planes === 32);
+  if (planes > 8 && !deep) throw new Error(`ILBM: ${planes} bitplanes not supported`);
 
   let rowBytes: number;
   let planesInData = planes;
@@ -65,20 +67,31 @@ export function decodeIlbm(b: Uint8Array): IndexedImage {
   const raw = compression === 1 ? unpackByteRun1(body, lineBytes * height) : body;
   if (compression > 1) throw new Error(`ILBM: unsupported compression ${compression}`);
 
-  const indices = new Uint8Array(width * height);
+  const values = planes > 8 ? new Uint32Array(width * height) : new Uint8Array(width * height);
   for (let y = 0; y < height; y++) {
     const lo = y * lineBytes;
     if (chunky) {
-      indices.set(raw.subarray(lo, lo + width), y * width);
+      values.set(raw.subarray(lo, lo + width), y * width);
       continue;
     }
     for (let pl = 0; pl < planes; pl++) {
       const po = lo + pl * rowBytes;
-      const bit = 1 << pl;
+      const bit = (1 << pl) >>> 0;
       for (let x = 0; x < width; x++) {
-        if (raw[po + (x >> 3)] & (0x80 >> (x & 7))) indices[y * width + x] |= bit;
+        if (raw[po + (x >> 3)] & (0x80 >> (x & 7))) values[y * width + x] |= bit;
       }
     }
+  }
+  const desc = `IFF ${chunky ? 'PBM' : 'ILBM'}, ${planes} planes${compression ? ', ByteRun1' : ''}`;
+
+  if (deep) {
+    // 24/32-bit: planes 0-7 red, 8-15 green, 16-23 blue, 24-31 alpha.
+    const rgba = new Uint8Array(width * height * 4);
+    for (let i = 0; i < values.length; i++) {
+      const v = values[i];
+      rgba.set([v & 255, (v >>> 8) & 255, (v >>> 16) & 255, planes === 32 ? v >>> 24 : 255], i * 4);
+    }
+    return { width, height, data: rgba, source: `${desc}, true color` };
   }
 
   let palette: Uint8Array;
@@ -91,6 +104,28 @@ export function decodeIlbm(b: Uint8Array): IndexedImage {
   // Old 4-bit-per-gun CMAPs (low nibble zero): scale up so 0xF0 becomes 0xFF.
   if (palette.every((v) => (v & 0x0f) === 0)) for (let i = 0; i < palette.length; i++) palette[i] |= palette[i] >> 4;
 
+  if (ham) {
+    // Hold-And-Modify: top two planes select "palette" or "modify R/G/B".
+    const dataBits = planes - 2;
+    const expand = (v: number) => (dataBits === 4 ? v * 17 : (v << 2) | (v >> 4));
+    const rgba = new Uint8Array(width * height * 4);
+    const pal = (i: number, c: number) => palette[i * 3 + c] ?? 0;
+    for (let y = 0; y < height; y++) {
+      let r = pal(0, 0), g = pal(0, 1), bl = pal(0, 2);
+      for (let x = 0; x < width; x++) {
+        const v = values[y * width + x];
+        const ctl = v >> dataBits, d = v & ((1 << dataBits) - 1);
+        if (ctl === 0) { r = pal(d, 0); g = pal(d, 1); bl = pal(d, 2); }
+        else if (ctl === 1) bl = expand(d);
+        else if (ctl === 2) r = expand(d);
+        else g = expand(d);
+        rgba.set([r, g, bl, 255], (y * width + x) * 4);
+      }
+    }
+    return { width, height, data: rgba, source: `${desc}, HAM${planes}` };
+  }
+
+  const indices = values as Uint8Array;
   let ehb = false;
   if (camg & CAMG_EHB && planes === 6) {
     ehb = true;
@@ -108,7 +143,7 @@ export function decodeIlbm(b: Uint8Array): IndexedImage {
     palette: padPalette(palette, bits),
     bits,
     transparentIndex: masking === 2 ? transparent : undefined,
-    source: `IFF ${chunky ? 'PBM' : 'ILBM'}, ${planes} planes${ehb ? ', EHB' : ''}${compression ? ', ByteRun1' : ''}`,
+    source: `${desc}${ehb ? ', EHB' : ''}`,
   };
 }
 
@@ -145,7 +180,20 @@ function packByteRun1(row: Uint8Array): number[] {
 
 /** Encodes a ByteRun1-compressed planar ILBM. */
 export function encodeIlbm(img: IndexedImage): Uint8Array {
-  const { width, height, bits } = img;
+  return writePlanarIlbm(img.width, img.height, img.bits, img.indices, img.palette, img.transparentIndex);
+}
+
+/** Low-level planar ILBM writer: `values` holds one `planes`-bit value per pixel. */
+export function writePlanarIlbm(
+  width: number,
+  height: number,
+  bits: number,
+  values: ArrayLike<number>,
+  cmap: Uint8Array,
+  transparentIndex?: number,
+  camg?: number,
+): Uint8Array {
+  const img = { indices: values, palette: cmap, transparentIndex };
   const rowBytes = ((width + 15) >> 4) << 1;
   const bmhd = new Uint8Array(20);
   const dv = new DataView(bmhd.buffer);
@@ -166,7 +214,7 @@ export function encodeIlbm(img: IndexedImage): Uint8Array {
     for (let pl = 0; pl < bits; pl++) {
       plane.fill(0);
       for (let x = 0; x < width; x++) {
-        if (img.indices[y * width + x] & (1 << pl)) plane[x >> 3] |= 0x80 >> (x & 7);
+        if ((img.indices[y * width + x] >>> pl) & 1) plane[x >> 3] |= 0x80 >> (x & 7);
       }
       for (const v of packByteRun1(plane)) body.push(v);
     }
@@ -174,7 +222,12 @@ export function encodeIlbm(img: IndexedImage): Uint8Array {
 
   const parts: Uint8Array[] = [];
   writeChunk(parts, 'BMHD', bmhd);
-  writeChunk(parts, 'CMAP', img.palette);
+  if (img.palette.length) writeChunk(parts, 'CMAP', img.palette);
+  if (camg !== undefined) {
+    const c = new Uint8Array(4);
+    new DataView(c.buffer).setUint32(0, camg);
+    writeChunk(parts, 'CAMG', c);
+  }
   writeChunk(parts, 'BODY', new Uint8Array(body));
   const inner = parts.reduce((s, x) => s + x.length, 0);
   const out = new Uint8Array(12 + inner);

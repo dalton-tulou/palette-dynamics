@@ -13,7 +13,7 @@
       <div class="header-actions">
         <label class="button">
           Open image…
-          <input id="file" type="file" accept=".png,.gif,.iff,.ilbm,.lbm,image/png,image/gif" hidden />
+          <input id="file" type="file" accept=".png,.gif,.iff,.ilbm,.lbm,image/*" hidden />
         </label>
         <button id="sample" class="secondary">Load sample</button>
       </div>
@@ -22,8 +22,8 @@
     <main>
       <section id="viewer" class="viewer empty">
         <div class="drop-hint">
-          <strong>Drop a PNG, GIF or IFF ILBM here</strong>
-          <span>Indexed images only (up to 256 colors)</span>
+          <strong>Drop an image here</strong>
+          <span>PNG, GIF and IFF ILBM are read as-is. True-color images are converted to 256 colors.</span>
         </div>
         <canvas id="canvas"></canvas>
         <div class="viewer-bar">
