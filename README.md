@@ -4,6 +4,10 @@ A browser tool that reorders the palette of an indexed image so the picture
 still looks right when the **most significant bits** of each pixel index are
 dropped (on an Amiga: when the top bitplanes are switched off).
 
+**Try it: <https://dalton-tulou.github.io/palette-dynamics/>**
+
+To run it locally:
+
 ```bash
 npm install
 npm run dev     # open http://localhost:5173
