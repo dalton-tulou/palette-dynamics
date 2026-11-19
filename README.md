@@ -19,6 +19,12 @@ OKLab) with Floyd–Steinberg dithering. Transparent pixels get one palette entr
 new order, the **bit depth** slider shows the image with only the lowest *n*
 bits kept, and you can export the result as PNG or ILBM.
 
+## Deployment
+
+Every push to `main` runs the tests, builds, and publishes `dist/` to GitHub
+Pages (`.github/workflows/deploy.yml`). One-time setup in the GitHub repo:
+**Settings → Pages → Build and deployment → Source: GitHub Actions**.
+
 ## How it works
 
 With *n* bits kept, index *i* displays `palette[i mod 2^n]`, so the palette is
