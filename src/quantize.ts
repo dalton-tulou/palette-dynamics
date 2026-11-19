@@ -93,26 +93,56 @@ interface Bin {
   lab: [number, number, number];
 }
 
-/** Histogram at 5 bits per channel, keeping each bin's exact mean colour. */
-function buildBins(data: ArrayLike<number>, count: number): Bin[] {
-  const sums = new Float64Array(32768 * 4);
+/**
+ * Colour histogram keeping each bin's exact mean colour. Starts at 5 bits per
+ * channel; smooth images (few occupied bins) are re-binned at 6 bits, and then
+ * exactly, so they still get the full palette.
+ */
+function buildBins(data: ArrayLike<number>, count: number, k: number): Bin[] {
+  const enough = k * 8;
+  let bins = binAt(data, count, 5);
+  if (bins.length >= enough) return bins;
+  bins = binAt(data, count, 6);
+  if (bins.length >= enough) return bins;
+  return exactBins(data, count, 100_000) ?? bins;
+}
+
+function toBin(r: number, g: number, b: number, w: number): Bin {
+  return { r, g, b, w, lab: toOklab(r, g, b) };
+}
+
+function binAt(data: ArrayLike<number>, count: number, bits: 5 | 6): Bin[] {
+  const shift = 8 - bits;
+  const size = 1 << (bits * 3);
+  const sums = new Float64Array(size * 4);
   for (let i = 0; i < count; i++) {
     const o = i * 4;
     if (data[o + 3] < ALPHA_CUTOFF) continue;
-    const k = ((data[o] >> 3) << 10) | ((data[o + 1] >> 3) << 5) | (data[o + 2] >> 3);
-    sums[k * 4] += data[o];
-    sums[k * 4 + 1] += data[o + 1];
-    sums[k * 4 + 2] += data[o + 2];
-    sums[k * 4 + 3]++;
+    const key = ((data[o] >> shift) << (2 * bits)) | ((data[o + 1] >> shift) << bits) | (data[o + 2] >> shift);
+    sums[key * 4] += data[o];
+    sums[key * 4 + 1] += data[o + 1];
+    sums[key * 4 + 2] += data[o + 2];
+    sums[key * 4 + 3]++;
   }
   const bins: Bin[] = [];
-  for (let k = 0; k < 32768; k++) {
-    const w = sums[k * 4 + 3];
-    if (!w) continue;
-    const r = sums[k * 4] / w, g = sums[k * 4 + 1] / w, b = sums[k * 4 + 2] / w;
-    bins.push({ r, g, b, w, lab: toOklab(r, g, b) });
+  for (let key = 0; key < size; key++) {
+    const w = sums[key * 4 + 3];
+    if (w) bins.push(toBin(sums[key * 4] / w, sums[key * 4 + 1] / w, sums[key * 4 + 2] / w, w));
   }
   return bins;
+}
+
+/** One bin per distinct colour, or null if there are more than `max`. */
+function exactBins(data: ArrayLike<number>, count: number, max: number): Bin[] | null {
+  const counts = new Map<number, number>();
+  for (let i = 0; i < count; i++) {
+    const o = i * 4;
+    if (data[o + 3] < ALPHA_CUTOFF) continue;
+    const key = (data[o] << 16) | (data[o + 1] << 8) | data[o + 2];
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+    if (counts.size > max) return null;
+  }
+  return Array.from(counts, ([key, w]) => toBin(key >> 16, (key >> 8) & 255, key & 255, w));
 }
 
 function boxStats(box: Bin[]) {
@@ -127,7 +157,7 @@ function boxStats(box: Bin[]) {
 
 /** Returns packed RGB palette with at most k entries. */
 export function medianCutKMeans(data: ArrayLike<number>, count: number, k: number): Uint8Array {
-  const bins = buildBins(data, count);
+  const bins = buildBins(data, count, k);
   // Median cut: repeatedly split the box with the largest weighted variance.
   type Box = { bins: Bin[]; sse: number; axis: number };
   const mk = (b: Bin[]): Box => ({ bins: b, ...boxStats(b) });

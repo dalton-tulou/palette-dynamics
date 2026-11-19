@@ -23,6 +23,7 @@ const progress = $<HTMLProgressElement>('progress');
 const showOriginal = $<HTMLButtonElement>('show-original');
 const showRearranged = $<HTMLButtonElement>('show-rearranged');
 const toastEl = $<HTMLDivElement>('toast');
+const busyEl = $<HTMLDivElement>('busy');
 
 interface State {
   name: string;
@@ -40,6 +41,11 @@ function toast(msg: string) {
   toastEl.hidden = false;
   clearTimeout((toast as unknown as { t: number }).t);
   (toast as unknown as { t: number }).t = window.setTimeout(() => (toastEl.hidden = true), 4500);
+}
+
+function busy(msg: string | null) {
+  busyEl.hidden = !msg;
+  busyEl.textContent = msg ?? '';
 }
 
 function current(): IndexedImage {
@@ -201,8 +207,15 @@ function load(img: IndexedImage, name: string) {
 async function loadFile(file: File) {
   try {
     const bytes = new Uint8Array(await file.arrayBuffer());
-    load(await decodeImage(bytes), file.name);
+    const img = await decodeImage(bytes, async () => {
+      busy(`Converting ${file.name} to 256 colors…`);
+      // Let the message paint before the (synchronous) conversion starts.
+      await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+    });
+    busy(null);
+    load(img, file.name);
   } catch (err) {
+    busy(null);
     toast(err instanceof Error ? err.message : String(err));
   }
 }

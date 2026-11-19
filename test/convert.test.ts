@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeImage } from '../src/codecs';
 import { writePlanarIlbm } from '../src/codecs/ilbm';
 import { toOklab } from '../src/rearrange';
+import { toIndexed } from '../src/quantize';
 
 const dir = new URL('./fixtures/', import.meta.url);
 const load = (f: string) => new Uint8Array(readFileSync(new URL(f, dir)));
@@ -35,6 +36,22 @@ describe('truecolor → indexed', () => {
       expect((e / (ref.length / 3)) * 100).toBeLessThan(3);
     });
   }
+
+  it('gives smooth gradients the full 256 colors', () => {
+    const width = 300, height = 200;
+    const data = new Uint8Array(width * height * 4);
+    let seed = 1;
+    for (let y = 0; y < height; y++)
+      for (let x = 0; x < width; x++) {
+        seed = (seed * 1103515245 + 12345) >>> 0;
+        const n = (seed >>> 28) - 8; // small JPEG-like noise
+        const t = (x + y) / (width + height);
+        const o = (y * width + x) * 4;
+        data.set([255 * (1 - t) + n, 255 * Math.sin(Math.PI * t) + n, 255 * t + n, 255].map((v) => Math.max(0, Math.min(255, v))), o);
+      }
+    const r = toIndexed({ width, height, data, source: 't' });
+    expect(r.note).toContain('reduced to 256');
+  });
 
   it('maps transparent pixels to their own palette entry', async () => {
     const img = await decodeImage(load('rose-rgba.png'));
