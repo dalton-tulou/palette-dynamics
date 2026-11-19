@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Palette Dynamics</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Palette Dynamics</h1>
+      <p class="tagline">Reorder an indexed palette so the picture survives losing its top bits.</p>
+      <div class="header-actions">
+        <label class="button">
+          Open image…
+          <input id="file" type="file" accept=".png,.gif,.iff,.ilbm,.lbm,image/png,image/gif" hidden />
+        </label>
+        <button id="sample" class="secondary">Load sample</button>
+      </div>
+    </header>
+
+    <main>
+      <section id="viewer" class="viewer empty">
+        <div class="drop-hint">
+          <strong>Drop a PNG, GIF or IFF ILBM here</strong>
+          <span>Indexed images only (up to 256 colors)</span>
+        </div>
+        <canvas id="canvas"></canvas>
+        <div class="viewer-bar">
+          <span id="info"></span>
+          <span id="pixel-info"></span>
+          <label>Zoom
+            <select id="zoom">
+              <option value="fit">Fit</option>
+              <option value="1">1×</option>
+              <option value="2">2×</option>
+              <option value="3">3×</option>
+              <option value="4">4×</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <aside class="panel" id="panel" hidden>
+        <div class="group">
+          <div class="row">
+            <h2>Bit depth</h2>
+            <output id="depth-label"></output>
+          </div>
+          <input id="depth" type="range" min="0" max="8" step="1" />
+          <p class="hint">Keeps the lowest bits of each pixel index: index&nbsp;&amp;&nbsp;(2<sup>n</sup>−1).</p>
+        </div>
+
+        <div class="group">
+          <div class="row">
+            <h2>Palette order</h2>
+            <div class="segmented" role="radiogroup">
+              <button id="show-original" role="radio" aria-checked="true">Original</button>
+              <button id="show-rearranged" role="radio" aria-checked="false" disabled>Rearranged</button>
+            </div>
+          </div>
+          <div class="row actions">
+            <button id="rearrange">Rearrange colors</button>
+            <label class="check"><input id="pin-zero" type="checkbox" /> Keep color 0 fixed</label>
+          </div>
+          <progress id="progress" max="1" value="0" hidden></progress>
+        </div>
+
+        <div class="group">
+          <h2>Palette</h2>
+          <div id="palette" class="palette"></div>
+          <p class="hint" id="palette-hint">Hover a swatch for details. Dimmed entries are unreachable at this depth; their lower strip shows the color they turn into.</p>
+        </div>
+
+        <div class="group">
+          <h2>Error by bit depth</h2>
+          <p class="hint">Mean color difference per pixel (OKLab ×100, ≈ ΔE).</p>
+          <table id="errors"></table>
+        </div>
+
+        <div class="group">
+          <h2>Export</h2>
+          <div class="row actions">
+            <button id="export-png" class="secondary">Download PNG</button>
+            <button id="export-ilbm" class="secondary">Download ILBM</button>
+          </div>
+          <p class="hint">Exports the full-depth image with the order currently shown.</p>
+        </div>
+      </aside>
+    </main>
+    <div id="toast" role="status" hidden></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
